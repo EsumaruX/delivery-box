@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>宅配ボックス確認チェッカー</title>
+    <!-- PWA / ホーム画面追加用メタタグ -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="宅配BOX確認">
+    <meta name="theme-color" content="#0f172a">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts (Noto Sans JP) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans JP', sans-serif;
+            background-color: #0f172a; /* slate-900: 屋外でも暗いエントランスでも見やすい高コントラスト背景 */
+            color: #f8fafc;
+            -webkit-tap-highlight-color: transparent;
+            overscroll-behavior-y: none;
+        }
+        /* カスタムスクロールバー */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
+        }
+        /* トグルスイッチアニメーション */
+        .toggle-checkbox:checked {
+            right: 0;
+            border-color: #f59e0b;
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            background-color: #f59e0b;
+        }
+        /* 滞留アラートのパルス枠線 */
+        @keyframes alertPulse {
+            0%, 100% { border-color: #ef4444; box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.5); }
+            50% { border-color: #fca5a5; box-shadow: 0 0 12px 2px rgba(239, 68, 68, 0.7); }
+        }
+        .alert-overdue {
+            animation: alertPulse 2.5s infinite;
+            border-width: 3px !important;
+            border-color: #ef4444 !important;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col select-none">
+
+    <!-- 隠しカメラ入力用インプット -->
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+
+    <!-- ヘッダーエリア（固定） -->
+    <header class="sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-700 px-3 py-2.5 shadow-lg">
+        <div class="max-w-4xl mx-auto flex flex-col gap-2.5">
+            <!-- 上段：物件選択 ＆ 新規・削除ボタン -->
+            <div class="flex items-center gap-2">
+                <div class="relative flex-1">
+                    <select id="propertySelect" aria-label="物件を選択" class="w-full appearance-none bg-slate-800 border border-slate-600 text-white font-bold text-base rounded-xl pl-3.5 pr-9 py-2.5 focus:outline-none focus:ring-2 focus:ring-amber-400 truncate">
+                        <!-- JSで動的生成 -->
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2.5 text-slate-300">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7"></path></svg>
+                    </div>
+                </div>
+
+                <button id="btnOpenNewProperty" type="button" class="shrink-0 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-bold text-sm px-3.5 py-2.5 rounded-xl shadow flex items-center gap-1 transition">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"></path></svg>
+                    <span>新規物件</span>
+                </button>
+
+                <button id="btnDeleteProperty" type="button" aria-label="現在の物件を削除" class="shrink-0 bg-slate-800 hover:bg-red-900/60 active:bg-red-800 text-slate-300 hover:text-red-300 border border-slate-600 p-2.5 rounded-xl transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </button>
+            </div>
+
+            <!-- 下段：ステータスサマリー ＆ 番号編集モード切替トグル -->
+            <div class="flex items-center justify-between bg-slate-800/80 px-3 py-2 rounded-xl border border-slate-700/80">
+                <div class="flex items-center gap-3 text-xs sm:text-sm">
+                    <span id="gridDimensionBadge" class="bg-slate-700 text-slate-200 font-bold px-2 py-0.5 rounded-md">縦3 × 横3</span>
+                    <span class="text-slate-300">入庫中: <strong id="occupiedCount" class="text-amber-400 text-base">0</strong><span id="totalCount" class="text-slate-400">/9</span></span>
+                    <span id="overdueBadge" class="hidden bg-red-600 text-white font-bold px-2 py-0.5 rounded-md text-xs animate-pulse">3日以上滞留あり</span>
+                </div>
+
+                <!-- 番号編集モードトグル -->
+                <label for="editModeToggle" class="flex items-center gap-2 cursor-pointer">
+                    <span id="editModeLabel" class="text-xs sm:text-sm font-bold text-slate-300">番号編集</span>
+                    <div class="relative inline-block w-11 h-6 align-middle select-none transition duration-200 ease-in">
+                        <input type="checkbox" id="editModeToggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 border-slate-600 appearance-none cursor-pointer transition-all duration-200 z-10 left-0 checked:left-5"/>
+                        <span class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-600 cursor-pointer transition-colors duration-200"></span>
+                    </div>
+                </label>
+            </div>
+        </div>
+    </header>
+
+    <!-- 編集モード中の案内バナー -->
+    <div id="editModeBanner" class="hidden bg-amber-500 text-slate-950 text-center text-xs sm:text-sm font-bold py-1.5 px-3 shadow">
+        ✏️ 番号編集モード中：各枠の番号をタップして直接書き換えられます（自動保存）
+    </div>
+
+    <!-- メインコンテンツ：宅配ボックスグリッド -->
+    <main class="flex-1 p-3 max-w-4xl w-full mx-auto overflow-x-auto">
+        <div id="boxGrid" class="grid gap-2.5 sm:gap-3 w-full pb-12">
+            <!-- JSでグリッド枠を動的生成 -->
+        </div>
+    </main>
+
+    <!-- トースト通知（alert代替） -->
+    <div id="toastContainer" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none flex flex-col items-center gap-2 w-11/12 max-w-sm"></div>
+
+    <!-- ローディングオーバーレイ（画像圧縮中など） -->
+    <div id="loadingOverlay" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+        <div class="w-12 h-12 border-4 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-white font-bold text-base">写真を最適化して保存中...</p>
+    </div>
+
+    <!-- ==========================================
+         モーダル1: 新規物件作成
+    =========================================== -->
+    <div id="newPropertyModal" class="hidden fixed inset-0 z-40 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-slate-800 border border-slate-600 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div class="bg-slate-900 px-4 py-3.5 border-b border-slate-700 flex justify-between items-center">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                    <span class="text-amber-400">🏢</span> 新規物件の登録
+                </h2>
+                <button type="button" onclick="closeModal('newPropertyModal')" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <form id="newPropertyForm" class="p-4 flex flex-col gap-4">
+                <div>
+                    <label for="inputPropName" class="block text-sm font-bold text-slate-200 mb-1.5">物件名 <span class="text-red-400">*</span></label>
+                    <input type="text" id="inputPropName" required placeholder="例：グランドメゾン梅田" class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3.5 py-3 text-white text-base focus:outline-none focus:ring-2 focus:ring-amber-400">
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label for="inputRows" class="block text-sm font-bold text-slate-200 mb-1.5">縦の段数 (1〜15)</label>
+                        <input type="number" id="inputRows" min="1" max="15" value="3" required class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3.5 py-3 text-white text-lg font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400">
+                    </div>
+                    <div>
+                        <label for="inputCols" class="block text-sm font-bold text-slate-200 mb-1.5">横の列数 (1〜15)</label>
+                        <input type="number" id="inputCols" min="1" max="15" value="4" required class="w-full bg-slate-900 border border-slate-600 rounded-xl px-3.5 py-3 text-white text-lg font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400">
+                    </div>
+                </div>
+
+                <p class="text-xs text-slate-400 bg-slate-900/70 p-2.5 rounded-xl border border-slate-700">
+                    ※作成後、画面右上の「番号編集」スイッチをONにすると、各枠のボックス番号を自由に手入力できます。
+                </p>
+
+                <div class="flex gap-2.5 pt-2">
+                    <button type="button" onclick="closeModal('newPropertyModal')" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition">キャンセル</button>
+                    <button type="submit" class="flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3 rounded-xl shadow transition">作成する</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ==========================================
+         モーダル2: 確認ダイアログ（confirm代替）
+    =========================================== -->
+    <div id="confirmModal" class="hidden fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-slate-800 border border-slate-600 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl p-5 flex flex-col gap-4">
+            <h3 id="confirmTitle" class="text-lg font-bold text-white">確認</h3>
+            <p id="confirmMessage" class="text-sm text-slate-300 leading-relaxed"></p>
+            <div class="flex gap-2.5 pt-1">
+                <button type="button" id="btnConfirmCancel" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition">キャンセル</button>
+                <button type="button" id="btnConfirmOk" class="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl shadow transition">実行する</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==========================================
+         モーダル3: 写真比較・更新・リセットモーダル
+    =========================================== -->
+    <div id="compareModal" class="hidden fixed inset-0 z-40 bg-slate-950/90 backdrop-blur-sm flex flex-col justify-between p-2 sm:p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl mx-auto flex flex-col max-h-full overflow-hidden shadow-2xl">
+            <!-- モーダルヘッダー -->
+            <div class="px-4 py-3 bg-slate-800 border-b border-slate-700 flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-2.5">
+                    <span id="compareBoxNumber" class="bg-amber-500 text-slate-950 font-black text-base px-3 py-1 rounded-lg">BOX 1</span>
+                    <span id="compareElapsedBadge" class="text-xs font-bold px-2.5 py-1 rounded-md bg-slate-700 text-slate-200">今日撮影</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <!-- レイアウト切替ボタン（横並び / 縦並び） -->
+                    <button type="button" id="btnToggleCompareLayout" class="bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-slate-600 flex items-center gap-1">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                        <span id="layoutToggleText">上下表示</span>
+                    </button>
+                    <button type="button" onclick="closeModal('compareModal')" class="text-slate-400 hover:text-white p-1.5 bg-slate-700/50 rounded-lg">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- モーダルボディ：写真比較エリア -->
+            <div class="flex-1 overflow-y-auto p-3 sm:p-4">
+                <div id="compareGridContainer" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <!-- 前回（1つ前） -->
+                    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden flex flex-col">
+                        <div class="px-3 py-2 bg-slate-800/90 border-b border-slate-700 flex justify-between items-center">
+                            <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">◀ 前回（1つ前）</span>
+                            <span id="prevTimestamp" class="text-xs font-bold text-slate-300">--/-- --:--</span>
+                        </div>
+                        <div id="prevPhotoWrapper" class="relative aspect-[4/3] bg-slate-950 flex items-center justify-center overflow-hidden">
+                            <img id="prevPhotoImg" src="" alt="前回の写真" class="hidden w-full h-full object-contain cursor-zoom-in" onclick="openZoomImage(this.src, '前回の写真')">
+                            <div id="prevPhotoEmpty" class="flex flex-col items-center justify-center text-slate-500 p-4 text-center">
+                                <svg class="w-10 h-10 mb-1.5 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                <span class="text-xs font-bold">前回の記録なし</span>
+                                <span class="text-[11px] mt-0.5">次回更新時に現在の写真がここへ移動します</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 今回（最新） -->
+                    <div class="bg-slate-800 border-2 border-amber-500/70 rounded-xl overflow-hidden flex flex-col shadow-lg">
+                        <div class="px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 flex justify-between items-center">
+                            <span class="text-xs font-bold text-amber-400">● 今回（最新）</span>
+                            <span id="currTimestamp" class="text-xs font-bold text-white">--/-- --:--</span>
+                        </div>
+                        <div class="relative aspect-[4/3] bg-slate-950 flex items-center justify-center overflow-hidden">
+                            <img id="currPhotoImg" src="" alt="今回の写真" class="w-full h-full object-contain cursor-zoom-in" onclick="openZoomImage(this.src, '今回（最新）の写真')">
+                            <span class="absolute bottom-2 right-2 bg-black/60 text-white text-[10px] px-2 py-0.5 rounded pointer-events-none">タップで拡大</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- モーダルフッター：アクションボタン（片手操作しやすい下部配置） -->
+            <div class="p-3 sm:p-4 bg-slate-800 border-t border-slate-700 flex flex-col gap-2.5 shrink-0">
+                <button type="button" id="btnRetakePhoto" class="w-full bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-black text-base py-3.5 rounded-xl shadow-lg flex items-center justify-center gap-2 transition">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    <span>新しく撮影して更新</span>
+                </button>
+
+                <div class="grid grid-cols-2 gap-2.5">
+                    <button type="button" id="btnClearBox" class="bg-slate-700 hover:bg-red-900/70 active:bg-red-800 text-red-300 border border-slate-600 font-bold text-sm py-3 rounded-xl flex items-center justify-center gap-1.5 transition">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <span>空（取出済）にする</span>
+                    </button>
+                    <button type="button" onclick="closeModal('compareModal')" class="bg-slate-700 hover:bg-slate-600 text-white font-bold text-sm py-3 rounded-xl transition">
+                        閉じる
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==========================================
+         モーダル4: 全画面拡大ビューア
+    =========================================== -->
+    <div id="zoomModal" class="hidden fixed inset-0 z-50 bg-black/95 flex flex-col" onclick="closeModal('zoomModal')">
+        <div class="p-4 flex justify-between items-center text-white bg-gradient-to-b from-black/80 to-transparent">
+            <span id="zoomCaption" class="font-bold text-sm">写真拡大</span>
+            <button type="button" class="bg-white/20 px-3 py-1.5 rounded-lg text-xs font-bold">閉じる ✕</button>
+        </div>
+        <div class="flex-1 flex items-center justify-center p-2 overflow-hidden">
+            <img id="zoomImg" src="" alt="拡大写真" class="max-w-full max-h-full object-contain">
+        </div>
+    </div>
+
+    <script>
+        /**
+         * 宅配ボックス確認・写真比較Webアプリ
+         * IndexedDB 永続化・画像自動圧縮・PWAマニフェスト動的生成
+         */
+
+        // ==========================================
+        // 1. PWA Manifest 動的生成（単一HTML完結対応）
+        // ==========================================
+        (function setupDynamicManifest() {
+            const svgIcon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0f172a"/><rect x="64" y="64" width="172" height="172" rx="24" fill="#f59e0b"/><rect x="276" y="64" width="172" height="172" rx="24" fill="#334155"/><rect x="64" y="276" width="172" height="172" rx="24" fill="#334155"/><rect x="276" y="276" width="172" height="172" rx="24" fill="#ef4444"/></svg>`;
+            const iconUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgIcon);
+            const manifest = {
+                name: '宅配ボックス確認チェッカー',
+                short_name: '宅配BOX確認',
+                start_url: '.',
+                display: 'standalone',
+                background_color: '#0f172a',
+                theme_color: '#0f172a',
+                icons: [{ src: iconUrl, sizes: '512x512', type: 'image/svg+xml' }]
+            };
+            const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
+            const link = document.createElement('link');
+            link.rel = 'manifest';
+            link.href = URL.createObjectURL(blob);
+            document.head.appendChild(link);
+        })();
+
+        // ==========================================
+        // 2. IndexedDB ラッパー
+        // ==========================================
+        const DB_NAME = 'DeliveryBoxCheckerDB';
+        const DB_VERSION = 1;
+        const STORE_PROPERTIES = 'properties';
+        const STORE_META = 'meta';
+
+        let db = null;
+
+        function initDB() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = (e) => {
+                    const database = e.target.result;
+                    if (!database.objectStoreNames.contains(STORE_PROPERTIES)) {
+                        database.createObjectStore(STORE_PROPERTIES, { keyPath: 'id' });
+                    }
+                    if (!database.objectStoreNames.contains(STORE_META)) {
+                        database.createObjectStore(STORE_META, { keyPath: 'key' });
+                    }
+                };
+                request.onsuccess = (e) => {
+                    db = e.target.result;
+                    resolve(db);
+                };
+                request.onerror = (e) => reject(e.target.error);
+            });
+        }
+
+        function dbGetAllProperties() {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_PROPERTIES, 'readonly');
+                const store = tx.objectStore(STORE_PROPERTIES);
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function dbSaveProperty(propertyObj) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_PROPERTIES, 'readwrite');
+                const store = tx.objectStore(STORE_PROPERTIES);
+                const req = store.put(propertyObj);
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function dbDeleteProperty(id) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_PROPERTIES, 'readwrite');
+                const store = tx.objectStore(STORE_PROPERTIES);
+                const req = store.delete(id);
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function dbGetMeta(key) {
+            return new Promise((resolve) => {
+                const tx = db.transaction(STORE_META, 'readonly');
+                const req = tx.objectStore(STORE_META).get(key);
+                req.onsuccess = () => resolve(req.result ? req.result.value : null);
+                req.onerror = () => resolve(null);
+            });
+        }
+
+        function dbSetMeta(key, value) {
+            return new Promise((resolve) => {
+                const tx = db.transaction(STORE_META, 'readwrite');
+                tx.objectStore(STORE_META).put({ key, value });
+                tx.oncomplete = () => resolve();
+            });
+        }
+
+        // ==========================================
+        // 3. アプリケーション状態管理
+        // ==========================================
+        let properties = [];
+        let currentPropertyId = null;
+        let isEditMode = false;
+        let activeBoxIndex = null; // 撮影または比較中のボックスインデックス
+        let isVerticalCompare = false; // モーダル内の比較レイアウト
+
+        // ==========================================
+        // 4. ユーティリティ関数（日時・経過日数・画像圧縮）
+        // ==========================================
+        function formatDateTime(timestamp) {
+            if (!timestamp) return '';
+            const d = new Date(timestamp);
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            const hh = String(d.getHours()).padStart(2, '0');
+            const min = String(d.getMinutes()).padStart(2, '0');
+            return `${mm}/${dd} ${hh}:${min}`;
+        }
+
+        function getElapsedInfo(timestamp) {
+            if (!timestamp) return { days: 0, label: '', isOverdue: false };
+            const now = new Date();
+            const target = new Date(timestamp);
+            // 日付ベース（0時基準）での経過日数計算
+            const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+            const targetStart = new Date(target.getFullYear(), target.getMonth(), target.getDate()).getTime();
+            const diffDays = Math.floor((todayStart - targetStart) / (1000 * 60 * 60 * 24));
+
+            let label = '';
+            if (diffDays <= 0) {
+                label = '今日';
+            } else {
+                label = `${diffDays}日前`;
+            }
+            return {
+                days: diffDays,
+                label: label,
+                isOverdue: diffDays >= 3 // 3日以上経過でアラート
+            };
+        }
+
+        // 画像を長辺1000px以下・JPEG品質0.75に圧縮してDataURLを返す
+        function compressImage(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const MAX_SIZE = 1000;
+                        let width = img.width;
+                        let height = img.height;
+
+                        if (width > height) {
+                            if (width > MAX_SIZE) {
+                                height = Math.round((height * MAX_SIZE) / width);
+                                width = MAX_SIZE;
+                            }
+                        } else {
+                            if (height > MAX_SIZE) {
+                                width = Math.round((width * MAX_SIZE) / height);
+                                height = MAX_SIZE;
+                            }
+                        }
+
+                        const canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.75);
+                        resolve(compressedDataUrl);
+                    };
+                    img.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+                    img.src = event.target.result;
+                };
+                reader.onerror = () => reject(new Error('ファイルの読み込みに失敗しました'));
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            const bgClass = type === 'error' ? 'bg-red-600 text-white' : (type === 'success' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-white border border-slate-600');
+            toast.className = `${bgClass} px-4 py-2.5 rounded-xl shadow-xl text-sm font-bold text-center transition-all duration-300 opacity-0 translate-y-2`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {
+                toast.classList.remove('opacity-0', 'translate-y-2');
+            });
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => toast.remove(), 300);
+            }, 2400);
+        }
+
+        // ==========================================
+        // 5. モーダル制御 & カスタム確認ダイアログ
+        // ==========================================
+        function openModal(id) {
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        function showConfirm(title, message, okText = '実行する', isDanger = true) {
+            return new Promise((resolve) => {
+                document.getElementById('confirmTitle').textContent = title;
+                document.getElementById('confirmMessage').textContent = message;
+                const okBtn = document.getElementById('btnConfirmOk');
+                okBtn.textContent = okText;
+                okBtn.className = isDanger
+                    ? 'flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-3 rounded-xl shadow transition'
+                    : 'flex-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-3 rounded-xl shadow transition';
+
+                openModal('confirmModal');
+
+                const cleanup = (result) => {
+                    closeModal('confirmModal');
+                    okBtn.onclick = null;
+                    document.getElementById('btnConfirmCancel').onclick = null;
+                    resolve(result);
+                };
+
+                okBtn.onclick = () => cleanup(true);
+                document.getElementById('btnConfirmCancel').onclick = () => cleanup(false);
+            });
+        }
+
+        function openZoomImage(src, caption) {
+            if (!src) return;
+            document.getElementById('zoomImg').src = src;
+            document.getElementById('zoomCaption').textContent = caption;
+            openModal('zoomModal');
+        }
+
+        // ==========================================
+        // 6. 初期データ生成（初回起動時）
+        // ==========================================
+        function createPropertyObject(name, rows, cols) {
+            const total = rows * cols;
+            const boxes = [];
+            for (let i = 0; i < total; i++) {
+                boxes.push({
+                    number: String(i + 1),
+                    current: null, // { photo: dataUrl, timestamp: number }
+                    previous: null // { photo: dataUrl, timestamp: number }
+                });
+            }
+            return {
+                id: 'prop_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+                name: name,
+                rows: rows,
+                cols: cols,
+                boxes: boxes,
+                createdAt: Date.now()
+            };
+        }
+
+        // ==========================================
+        // 7. 画面レンダリング（ヘッダー & グリッド）
+        // ==========================================
+        function getCurrentProperty() {
+            return properties.find(p => p.id === currentPropertyId) || properties[0];
+        }
+
+        function renderPropertySelect() {
+            const select = document.getElementById('propertySelect');
+            select.innerHTML = '';
+            properties.forEach(prop => {
+                const opt = document.createElement('option');
+                opt.value = prop.id;
+                opt.textContent = `${prop.name} (${prop.rows}×${prop.cols})`;
+                if (prop.id === currentPropertyId) opt.selected = true;
+                select.appendChild(opt);
+            });
+        }
+
+        function renderGrid() {
+            const prop = getCurrentProperty();
+            if (!prop) return;
+
+            const gridEl = document.getElementById('boxGrid');
+            // 列数に応じたCSS Grid設定（横列が多い場合でもタップしやすい最小幅105pxを確保）
+            gridEl.style.gridTemplateColumns = `repeat(${prop.cols}, minmax(105px, 1fr))`;
+            gridEl.innerHTML = '';
+
+            let occupied = 0;
+            let hasOverdue = false;
+
+            prop.boxes.forEach((box, idx) => {
+                const hasPhoto = Boolean(box.current && box.current.photo);
+                if (hasPhoto) occupied++;
+
+                const elapsed = hasPhoto ? getElapsedInfo(box.current.timestamp) : { days: 0, label: '', isOverdue: false };
+                if (elapsed.isOverdue) hasOverdue = true;
+
+                // 枠カード要素
+                const card = document.createElement('div');
+                let baseClasses = 'relative rounded-xl overflow-hidden aspect-[4/3] transition-all select-none flex flex-col justify-between ';
+                if (isEditMode) {
+                    baseClasses += 'bg-slate-800 border-2 border-amber-400/80 shadow-md';
+                } else if (hasPhoto) {
+                    baseClasses += elapsed.isOverdue
+                        ? 'bg-slate-800 border-red-500 alert-overdue cursor-pointer active:scale-[0.98]'
+                        : 'bg-slate-800 border-2 border-emerald-500/80 cursor-pointer active:scale-[0.98] shadow';
+                } else {
+                    baseClasses += 'bg-slate-800/70 hover:bg-slate-800 border-2 border-dashed border-slate-600 cursor-pointer active:scale-[0.98]';
+                }
+                card.className = baseClasses;
+
+                // 通常モード時は枠全体タップで撮影/比較フローへ
+                if (!isEditMode) {
+                    card.onclick = () => handleBoxTap(idx);
+                }
+
+                // --- 左上：ボックス番号バッジ または 編集インプット ---
+                const topRow = document.createElement('div');
+                topRow.className = 'relative z-10 p-1.5 flex items-start justify-between gap-1';
+
+                if (isEditMode) {
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = box.number;
+                    input.placeholder = '番号';
+                    input.setAttribute('aria-label', `枠${idx + 1}のボックス番号`);
+                    input.className = 'w-full bg-slate-950 text-amber-300 font-black text-base px-2 py-1 rounded-lg border border-amber-400 focus:outline-none focus:ring-2 focus:ring-white';
+                    input.onclick = (e) => e.stopPropagation();
+                    input.onchange = async (e) => {
+                        const newVal = e.target.value.trim() || String(idx + 1);
+                        prop.boxes[idx].number = newVal;
+                        await dbSaveProperty(prop);
+                        showToast(`番号「${newVal}」を保存しました`, 'success');
+                    };
+                    topRow.appendChild(input);
+                } else {
+                    const numBadge = document.createElement('span');
+                    numBadge.className = hasPhoto
+                        ? 'bg-slate-950/85 text-white font-black text-xs sm:text-sm px-2 py-0.5 rounded-md border border-slate-600/80 shadow backdrop-blur-xs'
+                        : 'bg-slate-700/90 text-slate-200 font-bold text-xs sm:text-sm px-2 py-0.5 rounded-md';
+                    numBadge.textContent = box.number;
+                    topRow.appendChild(numBadge);
+
+                    // 前回比較データがある場合は小さな履歴アイコンを表示
+                    if (hasPhoto && box.previous && box.previous.photo) {
+                        const histBadge = document.createElement('span');
+                        histBadge.className = 'bg-amber-500 text-slate-950 font-black text-[10px] px-1.5 py-0.5 rounded shadow';
+                        histBadge.textContent = '比較可';
+                        topRow.appendChild(histBadge);
+                    }
+                }
+                card.appendChild(topRow);
+
+                // --- 背景写真 または 未登録プレースホルダー ---
+                if (hasPhoto) {
+                    const img = document.createElement('img');
+                    img.src = box.current.photo;
+                    img.alt = `BOX ${box.number} の写真`;
+                    img.className = 'absolute inset-0 w-full h-full object-cover z-0';
+                    card.appendChild(img);
+
+                    // 下部：半透明黒帯（撮影日時 ＋ 経過日数）
+                    const bottomBar = document.createElement('div');
+                    bottomBar.className = 'relative z-10 mt-auto bg-black/80 backdrop-blur-[2px] px-2 py-1 flex items-center justify-between gap-1 text-[11px] sm:text-xs';
+
+                    const dateSpan = document.createElement('span');
+                    dateSpan.className = 'text-slate-200 font-medium truncate';
+                    dateSpan.textContent = formatDateTime(box.current.timestamp);
+
+                    const elapsedSpan = document.createElement('span');
+                    elapsedSpan.className = elapsed.isOverdue
+                        ? 'shrink-0 bg-red-600 text-white font-black px-1.5 py-0.2 rounded text-[10px] sm:text-xs'
+                        : 'shrink-0 text-amber-300 font-bold';
+                    elapsedSpan.textContent = elapsed.label;
+
+                    bottomBar.appendChild(dateSpan);
+                    bottomBar.appendChild(elapsedSpan);
+                    card.appendChild(bottomBar);
+                } else {
+                    // 未登録時の中央案内
+                    const centerGuide = document.createElement('div');
+                    centerGuide.className = 'flex-1 flex flex-col items-center justify-center text-slate-400 px-1 pb-2 text-center';
+                    if (!isEditMode) {
+                        centerGuide.innerHTML = `
+                            <svg class="w-6 h-6 sm:w-7 sm:h-7 mb-1 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            </svg>
+                            <span class="text-[11px] sm:text-xs font-bold leading-tight">タップして撮影</span>
+                        `;
+                    } else {
+                        centerGuide.innerHTML = `<span class="text-[11px] text-amber-400/70 font-bold">空きBOX</span>`;
+                    }
+                    card.appendChild(centerGuide);
+                }
+
+                gridEl.appendChild(card);
+            });
+
+            // ヘッダーのサマリー表示更新
+            document.getElementById('gridDimensionBadge').textContent = `縦${prop.rows} × 横${prop.cols}`;
+            document.getElementById('occupiedCount').textContent = occupied;
+            document.getElementById('totalCount').textContent = `/${prop.boxes.length}`;
+
+            const overdueBadge = document.getElementById('overdueBadge');
+            if (hasOverdue) {
+                overdueBadge.classList.remove('hidden');
+            } else {
+                overdueBadge.classList.add('hidden');
+            }
+        }
+
+        // ==========================================
+        // 8. 撮影・比較・更新・リセットフロー
+        // ==========================================
+        function triggerCameraForBox(boxIndex) {
+            activeBoxIndex = boxIndex;
+            const cameraInput = document.getElementById('cameraInput');
+            cameraInput.value = ''; // 同じ連続撮影でもchangeイベントを発火させる
+            cameraInput.click();
+        }
+
+        function handleBoxTap(boxIndex) {
+            const prop = getCurrentProperty();
+            const box = prop.boxes[boxIndex];
+
+            if (!box.current || !box.current.photo) {
+                // 写真がまだ1枚もない場合：直接カメラ起動
+                triggerCameraForBox(boxIndex);
+            } else {
+                // すでに写真がある場合：比較・操作モーダルを開く
+                openCompareModal(boxIndex);
+            }
+        }
+
+        function openCompareModal(boxIndex) {
+            activeBoxIndex = boxIndex;
+            const prop = getCurrentProperty();
+            const box = prop.boxes[boxIndex];
+
+            document.getElementById('compareBoxNumber').textContent = `BOX ${box.number}`;
+
+            const elapsed = getElapsedInfo(box.current.timestamp);
+            const elapsedBadge = document.getElementById('compareElapsedBadge');
+            elapsedBadge.textContent = `${elapsed.label}に撮影`;
+            elapsedBadge.className = elapsed.isOverdue
+                ? 'text-xs font-black px-2.5 py-1 rounded-md bg-red-600 text-white'
+                : 'text-xs font-bold px-2.5 py-1 rounded-md bg-slate-700 text-amber-300';
+
+            // 今回（最新）の写真セット
+            document.getElementById('currPhotoImg').src = box.current.photo;
+            document.getElementById('currTimestamp').textContent = formatDateTime(box.current.timestamp);
+
+            // 前回（1つ前）の写真セット
+            const prevImg = document.getElementById('prevPhotoImg');
+            const prevEmpty = document.getElementById('prevPhotoEmpty');
+            const prevTime = document.getElementById('prevTimestamp');
+
+            if (box.previous && box.previous.photo) {
+                prevImg.src = box.previous.photo;
+                prevImg.classList.remove('hidden');
+                prevEmpty.classList.add('hidden');
+                prevTime.textContent = formatDateTime(box.previous.timestamp);
+            } else {
+                prevImg.src = '';
+                prevImg.classList.add('hidden');
+                prevEmpty.classList.remove('hidden');
+                prevTime.textContent = '記録なし';
+            }
+
+            openModal('compareModal');
+        }
+
+        // カメラ撮影完了時の処理
+        document.getElementById('cameraInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file || activeBoxIndex === null) return;
+
+            const loading = document.getElementById('loadingOverlay');
+            loading.classList.remove('hidden');
+
+            try {
+                const compressedDataUrl = await compressImage(file);
+                const prop = getCurrentProperty();
+                const box = prop.boxes[activeBoxIndex];
+
+                // すでに「今回」の写真がある場合は「前回」へ押し出す
+                if (box.current && box.current.photo) {
+                    box.previous = {
+                        photo: box.current.photo,
+                        timestamp: box.current.timestamp
+                    };
+                }
+
+                // 新しい写真を「今回」として保存
+                box.current = {
+                    photo: compressedDataUrl,
+                    timestamp: Date.now()
+                };
+
+                await dbSaveProperty(prop);
+                renderGrid();
+
+                // 比較モーダルが開いていた場合は最新状態に更新
+                if (!document.getElementById('compareModal').classList.contains('hidden')) {
+                    openCompareModal(activeBoxIndex);
+                }
+
+                showToast(`BOX ${box.number} の写真を保存しました`, 'success');
+            } catch (err) {
+                console.error(err);
+                showToast('写真の処理中にエラーが発生しました', 'error');
+            } finally {
+                loading.classList.add('hidden');
+            }
+        });
+
+        // 比較モーダル内：「新しく撮影して更新」
+        document.getElementById('btnRetakePhoto').addEventListener('click', () => {
+            if (activeBoxIndex !== null) {
+                triggerCameraForBox(activeBoxIndex);
+            }
+        });
+
+        // 比較モーダル内：「空（取り出し済み）としてリセット」
+        document.getElementById('btnClearBox').addEventListener('click', async () => {
+            if (activeBoxIndex === null) return;
+            const prop = getCurrentProperty();
+            const box = prop.boxes[activeBoxIndex];
+
+            const ok = await showConfirm(
+                `BOX ${box.number} を空にしますか？`,
+                '荷物を取り出し済みとして、現在の写真と前回の比較履歴をすべてクリアし未入庫状態に戻します。',
+                '空にする',
+                true
+            );
+
+            if (ok) {
+                box.current = null;
+                box.previous = null;
+                await dbSaveProperty(prop);
+                closeModal('compareModal');
+                renderGrid();
+                showToast(`BOX ${box.number} を空（未入庫）に戻しました`, 'info');
+            }
+        });
+
+        // 比較レイアウト切替（左右並列 / 上下並列）
+        document.getElementById('btnToggleCompareLayout').addEventListener('click', () => {
+            isVerticalCompare = !isVerticalCompare;
+            const container = document.getElementById('compareGridContainer');
+            const label = document.getElementById('layoutToggleText');
+            if (isVerticalCompare) {
+                container.className = 'grid grid-cols-1 gap-3';
+                label.textContent = '左右表示';
+            } else {
+                container.className = 'grid grid-cols-1 sm:grid-cols-2 gap-3';
+                label.textContent = '上下表示';
+            }
+        });
+
+        // ==========================================
+        // 9. ヘッダー操作イベント（物件切替・新規・削除・編集モード）
+        // ==========================================
+        document.getElementById('propertySelect').addEventListener('change', async (e) => {
+            currentPropertyId = e.target.value;
+            await dbSetMeta('lastPropertyId', currentPropertyId);
+            renderGrid();
+        });
+
+        document.getElementById('btnOpenNewProperty').addEventListener('click', () => {
+            document.getElementById('inputPropName').value = '';
+            document.getElementById('inputRows').value = '3';
+            document.getElementById('inputCols').value = '4';
+            openModal('newPropertyModal');
+        });
+
+        document.getElementById('newPropertyForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('inputPropName').value.trim();
+            const rows = Math.min(15, Math.max(1, parseInt(document.getElementById('inputRows').value, 10) || 3));
+            const cols = Math.min(15, Math.max(1, parseInt(document.getElementById('inputCols').value, 10) || 3));
+
+            if (!name) return;
+
+            const newProp = createPropertyObject(name, rows, cols);
+            await dbSaveProperty(newProp);
+            properties.push(newProp);
+            currentPropertyId = newProp.id;
+            await dbSetMeta('lastPropertyId', currentPropertyId);
+
+            closeModal('newPropertyModal');
+            renderPropertySelect();
+            renderGrid();
+            showToast(`「${name}」を作成しました`, 'success');
+        });
+
+        document.getElementById('btnDeleteProperty').addEventListener('click', async () => {
+            const prop = getCurrentProperty();
+            if (!prop) return;
+
+            const ok = await showConfirm(
+                '物件データの削除',
+                `「${prop.name}」のボックス設定と保存されたすべての写真を削除します。この操作は取り消せません。`,
+                '削除する',
+                true
+            );
+
+            if (ok) {
+                await dbDeleteProperty(prop.id);
+                properties = properties.filter(p => p.id !== prop.id);
+
+                // すべて削除された場合はサンプル物件を再生成
+                if (properties.length === 0) {
+                    const sample = createPropertyObject('サンプルマンション', 3, 3);
+                    await dbSaveProperty(sample);
+                    properties.push(sample);
+                }
+
+                currentPropertyId = properties[0].id;
+                await dbSetMeta('lastPropertyId', currentPropertyId);
+                renderPropertySelect();
+                renderGrid();
+                showToast('物件を削除しました', 'info');
+            }
+        });
+
+        // 番号編集モードトグル
+        document.getElementById('editModeToggle').addEventListener('change', (e) => {
+            isEditMode = e.target.checked;
+            const banner = document.getElementById('editModeBanner');
+            const label = document.getElementById('editModeLabel');
+            if (isEditMode) {
+                banner.classList.remove('hidden');
+                label.classList.add('text-amber-400');
+                label.classList.remove('text-slate-300');
+            } else {
+                banner.classList.add('hidden');
+                label.classList.remove('text-amber-400');
+                label.classList.add('text-slate-300');
+            }
+            renderGrid();
+        });
+
+        // ==========================================
+        // 10. アプリ初期化エントリーポイント
+        // ==========================================
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await initDB();
+                properties = await dbGetAllProperties();
+
+                // 初回起動時：サンプルマンション（縦3×横3）を1件自動生成
+                if (properties.length === 0) {
+                    const sample = createPropertyObject('サンプルマンション', 3, 3);
+                    await dbSaveProperty(sample);
+                    properties.push(sample);
+                }
+
+                const lastId = await dbGetMeta('lastPropertyId');
+                if (lastId && properties.some(p => p.id === lastId)) {
+                    currentPropertyId = lastId;
+                } else {
+                    currentPropertyId = properties[0].id;
+                }
+
+                renderPropertySelect();
+                renderGrid();
+            } catch (err) {
+                console.error('初期化エラー:', err);
+                showToast('データベースの初期化に失敗しました', 'error');
+            }
+        });
+    </script>
+</body>
+</html>
